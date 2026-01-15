@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import pdist
 import itertools
+import os
 
 """
 =============================================================================
@@ -55,6 +56,7 @@ Step C [カタログ化]:
    - Uniform    : [8, 16, 20, 20] (密度が均一な配置)
    - InnerHeavy : [8, 12, 16, 28] (内側の密度を高め、外側のd_minを稼ぐ配置)
    - Honeycomb  : [1, 7, 13, 19, 24] (中心1点、理想的な六方格子に近い配置)
+   - BalancedV2 : [8, 14, 18, 24] (各リングの密度を緩やかに変化させた調整型)
 
 2. 感度グラフ：catalog_[構成名]_sensitivity.png
    総当たり（全1,000通り）で計算した回転角の組み合わせを、成績の良い順（d_min が大きい順）に
@@ -153,7 +155,42 @@ def plot_constellation(points, title, filename):
     print(f"Saved plot: {filename}")
 
 # ==========================================
-# 2. Brute-Force Sweep Engines
+# 2. Simulation Functions (SER)
+# ==========================================
+
+def simulate_ser(constellation, snr_db, num_symbols=100000):
+    """
+    Simulates Symbol Error Rate (SER) for a given constellation at a specific SNR.
+    Uses Nearest Neighbor (ML) decoding.
+    """
+    M = len(constellation)
+    
+    # 1. Generate random Indices
+    tx_indices = np.random.randint(0, M, num_symbols)
+    tx_symbols = constellation[tx_indices]
+    
+    # 2. Add AWGN
+    snr_linear = 10**(snr_db / 10.0)
+    n0 = 1.0 / snr_linear
+    noise_std = np.sqrt(n0 / 2)
+    
+    noise = noise_std * (np.random.randn(num_symbols) + 1j * np.random.randn(num_symbols))
+    rx_symbols = tx_symbols + noise
+    
+    # 3. Demodulate (Nearest Neighbor)
+    rx_coords = np.column_stack((rx_symbols.real, rx_symbols.imag))
+    const_coords = np.column_stack((constellation.real, constellation.imag))
+    
+    from scipy.spatial import distance
+    dists = distance.cdist(rx_coords, const_coords, 'euclidean')
+    estimated_indices = np.argmin(dists, axis=1)
+    
+    # 4. Calculate SER
+    errors = np.sum(tx_indices != estimated_indices)
+    return errors / num_symbols
+
+# ==========================================
+# 3. Brute-Force Sweep Engines
 # ==========================================
 
 def sweep_alpha(ring_counts, alpha_range, fixed_phases=None):
@@ -229,13 +266,27 @@ def sweep_phases_bruteforce(ring_counts, fixed_alpha, divisions=10):
 def run_catalog_creation():
     print("=== 64-APSK Brute Force Catalog Creation ===")
     
-    # 1. Setup Configs and Parameters
-    target_configs = {
-        "Standard":   [4, 12, 20, 28],
-        "Uniform":    [8, 16, 20, 20],
-        "InnerHeavy": [8, 12, 16, 28],
-        "Honeycomb":  [1, 7, 13, 19, 24]
-    }
+    # 成果物の保存ディレクトリ
+    output_dir = "data/manual_su"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 網羅的探索リストの定義（全探索に近い広範囲な検証）
+    raw_configs = [
+        # --- 4 Rings ---
+        [4, 12, 20, 28], [4, 10, 20, 30], [4, 8, 12, 40],
+        [6, 12, 18, 28], [6, 10, 15, 33], [6, 14, 20, 24],
+        [8, 12, 16, 28], [8, 14, 18, 24],[8, 14, 20, 22], [8, 16, 20, 20], [8, 12, 20, 24],
+        [10, 14, 18, 22], [12, 16, 18, 18],
+        # --- 5 Rings ---
+        [1, 7, 13, 19, 24], [1, 6, 12, 18, 27], [1, 5, 10, 15, 33],
+        [4, 8, 12, 16, 24], [4, 6, 10, 14, 30],
+        [6, 10, 14, 16, 18], [8, 10, 12, 16, 18],
+        # --- 3 Rings (Reference) ---
+        [12, 20, 32], [16, 24, 24]
+    ]
+
+    # 辞書形式に変換（「Conf_8-14-18-24」のような形式で自動命名）
+    target_configs = {f"Conf_{'-'.join(map(str, c))}": c for c in raw_configs}
     
     # Protocol Parameters
     # Step A: Wide Alpha Search
@@ -243,6 +294,7 @@ def run_catalog_creation():
     
     # Step B: Phase Search Precision
     phase_divisions = 10
+    SNR_DB = 18.0
     
     ranking_data = []
 
@@ -250,26 +302,18 @@ def run_catalog_creation():
         print(f"\n>> Processing Config: {name} {rings}")
         
         # --- Step A: Find Best Alpha (Base) ---
-        # Fixed phases = all 0
         best_alpha, base_dmin, res_alpha = sweep_alpha(rings, alpha_range_step_a, fixed_phases=None)
-        print(f"   [Step A] Base Alpha (phases=0) found: {best_alpha:.3f} (d_min={base_dmin:.4f})")
         
         # --- Step B: Sweep Phases at Best Alpha ---
-        # "Step 2: Independent rotation of rings 2~4"
-        # We use the modular function which does exactly this for all rings > 1 (indices 1..N-1)
         best_phases, best_dmin, res_phases = sweep_phases_bruteforce(rings, best_alpha, divisions=phase_divisions)
+        
+        # --- Step C: Calculate SER for the best rotation ---
+        pts_best = generate_apsk_phased(rings, best_alpha, best_phases)
+        ser_val = simulate_ser(pts_best, SNR_DB, num_symbols=100000)
         
         # Calculate Improvement
         gain = (best_dmin / base_dmin - 1) * 100 if base_dmin > 0 else 0
-        print(f"   [Step B] Best Rotation found! d_min={best_dmin:.4f} (Gain +{gain:.1f}%)")
-        
-        # Calculate QAM Reference (approx 0.198 for 64QAM normalized)
-        # Note: Need theoretical d_min for 64-QAM. 
-        # For d=2, Energy = 42. Normalized d = 2/sqrt(42) = 0.3086 ? 
-        # Wait, for QAM levels -7..7, min dist is 2. 
-        # Avg Energy of 64QAM is 42. Scale factor S = sqrt(42).
-        # Normalized min dist = 2 / S = 2 / 6.48 = 0.3086.
-        # Let's verify standard values later or just print absolute.
+        print(f"   [Result] d_min={best_dmin:.4f} (Gain +{gain:.1f}%) | SER={ser_val:.2e} (@{SNR_DB}dB)")
         
         # Store for ranking
         ranking_data.append({
@@ -278,9 +322,10 @@ def run_catalog_creation():
             'best_alpha': best_alpha,
             'best_phases': best_phases,
             'dmin': best_dmin,
+            'ser': ser_val,
             'base_dmin': base_dmin,
             'gain': gain,
-            'all_phase_results': res_phases # For histogram
+            'all_phase_results': res_phases
         })
         
         # Plot Sensitivity (d_min vs Sorted Combination Index)
@@ -292,48 +337,40 @@ def run_catalog_creation():
         plt.ylabel("d_min")
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig(f"catalog_{name}_sensitivity.png")
+        plt.savefig(os.path.join(output_dir, f"catalog_{name}_sensitivity.png"))
         plt.close()
         
         # Plot Best Constellation
         pts_best = generate_apsk_phased(rings, best_alpha, best_phases)
-        plot_constellation(pts_best, f"{name} Optimized (d_min={best_dmin:.4f})", f"catalog_{name}_best_const.png")
+        plot_constellation(pts_best, 
+                          f"{name} Optimized (d_min={best_dmin:.4f})", 
+                          os.path.join(output_dir, f"catalog_{name}_best_const.png"))
 
     # --- Final Output: Ranking Table ---
-    print("\n" + "="*80)
+    print("\n" + "="*95)
     print(f" FINAL RANKING (Sorted by Optimized d_min)")
-    print("="*80)
-    print(f"{'Rank':<4} | {'Name':<12} | {'Alpha':<6} | {'d_min (Opt)':<12} | {'Gain':<8} | {'Phases (deg)'}")
-    print("-" * 80)
+    print("="*95)
+    print(f"{'Rank':<4} | {'Name':<18} | {'Alpha':<6} | {'d_min':<8} | {'SER (@18dB)':<10} | {'Gain':<6} | {'Phases (deg)'}")
+    print("-" * 95)
     
     ranking_data.sort(key=lambda x: x['dmin'], reverse=True)
     
     for i, data in enumerate(ranking_data, 1):
         phases_deg = [round(np.degrees(p), 1) for p in data['best_phases']]
-        print(f"{i:<4} | {data['name']:<12} | {data['best_alpha']:<6.2f} | {data['dmin']:<12.4f} | +{data['gain']:<6.1f}% | {phases_deg}")
+        print(f"{i:<4} | {data['name']:<18} | {data['best_alpha']:<6.2f} | {data['dmin']:<8.4f} | {data['ser']:<10.2e} | +{data['gain']:<4.1f}% | {phases_deg}")
     
-    print("="*80)
+    print("="*95)
     
-    # Save Catalog Text
+    # Save Catalog as Markdown Table
     with open("optimized_catalog.txt", "w") as f:
-        f.write("64-APSK Optimized Configuration Catalog\n")
-        f.write("=======================================\n\n")
+        f.write("# 64-APSK Optimized Configuration Catalog\n\n")
+        f.write("| Ring Configuration | d_min | SER (@18dB) | alpha | Gain | Phases (deg) |\n")
+        f.write("|:------------------:|:-----:|:-----------:|:-----:|:----:|:------------:|\n")
         for data in ranking_data:
-            f.write(f"Name: {data['name']}\n")
-            f.write(f"Rings: {data['rings']}\n")
-            f.write(f"Best Alpha: {data['best_alpha']:.4f}\n")
-            f.write(f"Best Phases (rad): {data['best_phases']}\n")
-            f.write(f"Best Phases (deg): {[round(np.degrees(p), 2) for p in data['best_phases']]}\n")
-            f.write(f"d_min: {data['dmin']:.5f}\n")
-            f.write(f"Top 10 Variations:\n")
-            # Sort phases by dmin
-            sorted_res = sorted(data['all_phase_results'], key=lambda x: x[1], reverse=True)[:10]
-            for rank, (p, d) in enumerate(sorted_res, 1):
-                p_deg = [round(np.degrees(x), 1) for x in p]
-                f.write(f"  #{rank}: d_min={d:.5f}, Phases={p_deg}\n")
-            f.write("\n---------------------------------------\n")
+            phases_deg = [round(np.degrees(p), 1) for p in data['best_phases']]
+            f.write(f"| {str(data['rings']):<18} | {data['dmin']:.5f} | {data['ser']:.2e} | {data['best_alpha']:.2f} | +{data['gain']:>4.1f}% | {phases_deg} |\n")
             
-    print("Catalog saved to 'optimized_catalog.txt'.")
+    print("Catalog saved to 'optimized_catalog.txt' as a Markdown table.")
 
 if __name__ == "__main__":
     run_catalog_creation()
