@@ -71,9 +71,9 @@ def plot_constellation(points):
     plt.axis('equal')
     plt.legend()
 
-def perform_ber_simulation(constellation, snr_db_range, num_symbols=50000):
+def perform_simulation(constellation, snr_db_range, num_symbols=50000):
     """
-    Simulates BER vs SNR for the given constellation.
+    Simulates BER and SER vs SNR for the given constellation.
     Uses a simple nearest-neighbor demapper and assumes a random bit mapping 
     (since exact DVB-S2X mapping is complex).
     
@@ -106,8 +106,9 @@ def perform_ber_simulation(constellation, snr_db_range, num_symbols=50000):
     tx_symbols = constellation[tx_indices]
     
     ber_results = []
+    ser_results = []
     
-    print(f"Simulating BER for SNR range: {snr_db_range} dB")
+    print(f"Simulating BER/SER for SNR range: {snr_db_range} dB")
     
     for snr_db in snr_db_range:
         # Calculate noise power
@@ -148,9 +149,14 @@ def perform_ber_simulation(constellation, snr_db_range, num_symbols=50000):
         ber = bit_errors / num_bits
         ber_results.append(ber)
         
-        print(f"SNR: {snr_db} dB, BER: {ber:.2e}")
+        # Count symbol errors
+        symbol_errors = np.sum(tx_indices != estimated_indices)
+        ser = symbol_errors / num_symbols
+        ser_results.append(ser)
         
-    return ber_results
+        print(f"SNR: {snr_db} dB, BER: {ber:.2e}, SER: {ser:.2e}")
+        
+    return ber_results, ser_results
 
 def generate_64qam_constellation():
     """
@@ -222,10 +228,57 @@ def generate_dvb_s2x_64apsk_8_12_20_24_constellation():
         
     return np.array(points)
 
+def generate_dvb_s2x_64apsk_4_12_20_28_constellation():
+    """
+    Generates the DVB-S2X 64-APSK constellation points (4+12+20+28 configuration).
+    Radii ratios are approximated or based on typical APSK spacing.
+    Assumed Radii ratios: R2/R1 = 2.5, R3/R1 = 4.0, R4/R1 = 5.5
+    """
+    # Radii ratios (Approximated)
+    gamma = np.array([1.0, 2.5, 4.0, 5.5])
+    
+    # Number of points per ring: 4, 12, 20, 28
+    M_rings = np.array([4, 12, 20, 28])
+    
+    # Determine base radius R1 such that total energy is normalized to 1 per symbol
+    energy_unscaled = np.sum(M_rings * (gamma ** 2))
+    R1 = np.sqrt(64 / energy_unscaled)
+    
+    radii = gamma * R1
+    
+    points = []
+    
+    # Ring 1: 4 points
+    phase_off_1 = 0 
+    for i in range(M_rings[0]):
+        theta = 2 * np.pi * i / M_rings[0] + phase_off_1
+        points.append(radii[0] * np.exp(1j * theta))
+        
+    # Ring 2: 12 points
+    phase_off_2 = 0 
+    for i in range(M_rings[1]):
+        theta = 2 * np.pi * i / M_rings[1] + phase_off_2
+        points.append(radii[1] * np.exp(1j * theta))
+        
+    # Ring 3: 20 points
+    phase_off_3 = 0
+    for i in range(M_rings[2]):
+        theta = 2 * np.pi * i / M_rings[2] + phase_off_3
+        points.append(radii[2] * np.exp(1j * theta))
+        
+    # Ring 4: 28 points
+    phase_off_4 = 0
+    for i in range(M_rings[3]):
+        theta = 2 * np.pi * i / M_rings[3] + phase_off_4
+        points.append(radii[3] * np.exp(1j * theta))
+        
+    return np.array(points)
+
 def main():
     # 1. Generate Constellations
     constellation = generate_dvb_s2x_64apsk_constellation()
     constellation_8_12_20_24 = generate_dvb_s2x_64apsk_8_12_20_24_constellation()
+    constellation_4_12_20_28 = generate_dvb_s2x_64apsk_4_12_20_28_constellation()
     
     # 2. Plot Constellations
     # Original
@@ -236,40 +289,65 @@ def main():
     
     # New 8-12-20-24
     plot_constellation(constellation_8_12_20_24)
-    plt.title('DVB-S2X 64-APSK Constellation (8+12+20+24)')
-    plt.savefig('dvb_s2x_64apsk_8_12_20_24_constellation.png')
-    print("Constellation plot saved to dvb_s2x_64apsk_8_12_20_24_constellation.png")
+    plt.title('64-APSK Constellation (8+12+20+24)')
+    plt.savefig('64apsk_8_12_20_24_constellation.png')
+    print("Constellation plot saved to 64apsk_8_12_20_24_constellation.png")
+
+    # New 4-12-20-28
+    plot_constellation(constellation_4_12_20_28)
+    plt.title('64-APSK Constellation (4+12+20+28)')
+    plt.savefig('64apsk_4_12_20_28_constellation.png')
+    print("Constellation plot saved to 64apsk_4_12_20_28_constellation.png")
     
-    # 3. Simulate BER
+    # 3. Simulate BER and SER
     snr_range = np.arange(10, 26, 1) # Scan 10dB to 25dB
     
     # Run 64APSK (8+16+20+20) Simulation
     print("Starting 64-APSK (8+16+20+20) Simulation...")
-    ber_apsk = perform_ber_simulation(constellation, snr_range)
+    ber_apsk, ser_apsk = perform_simulation(constellation, snr_range)
     
     # Run 64APSK (8+12+20+24) Simulation
     print("Starting 64-APSK (8+12+20+24) Simulation...")
-    ber_apsk_new = perform_ber_simulation(constellation_8_12_20_24, snr_range)
+    ber_apsk_new, ser_apsk_new = perform_simulation(constellation_8_12_20_24, snr_range)
+
+    # Run 64APSK (4+12+20+28) Simulation
+    print("Starting 64-APSK (4+12+20+28) Simulation...")
+    ber_apsk_4_12, ser_apsk_4_12 = perform_simulation(constellation_4_12_20_28, snr_range)
     
     # Run 64QAM Simulation
     print("Starting 64-QAM Simulation...")
     constellation_qam = generate_64qam_constellation()
-    ber_qam = perform_ber_simulation(constellation_qam, snr_range)
+    ber_qam, ser_qam = perform_simulation(constellation_qam, snr_range)
     
     # 4. Plot BER
     plt.figure(figsize=(10, 6))
     plt.semilogy(snr_range, ber_apsk, 'bo-', linewidth=2, label='64-APSK (8-16-20-20)')
     plt.semilogy(snr_range, ber_apsk_new, 'gx--', linewidth=2, label='64-APSK (8-12-20-24)')
-    plt.semilogy(snr_range, ber_qam, 'rs-.', linewidth=2, label='64-QAM (Standard)')
+    plt.semilogy(snr_range, ber_apsk_4_12, 'mv-.', linewidth=2, label='64-APSK (4-12-20-28)')
+    plt.semilogy(snr_range, ber_qam, 'rs:', linewidth=2, label='64-QAM (Standard)')
     plt.title('BER vs SNR Comparison')
     plt.xlabel('SNR (dB)')
     plt.ylabel('Bit Error Rate (BER)')
     plt.grid(True, which="both", ls="--")
     plt.ylim(1e-5, 1)
     plt.legend()
-    plt.savefig('dvb_s2x_64apsk_ber.png')
-    print("BER plot saved to dvb_s2x_64apsk_ber.png")
-    # plt.show()
+    plt.savefig('64apsk_vs_64qam_ber.png')
+    print("BER plot saved to 64apsk_vs_64qam_ber.png")
+    
+    # 5. Plot SER
+    plt.figure(figsize=(10, 6))
+    plt.semilogy(snr_range, ser_apsk, 'bo-', linewidth=2, label='64-APSK (8-16-20-20)')
+    plt.semilogy(snr_range, ser_apsk_new, 'gx--', linewidth=2, label='64-APSK (8-12-20-24)')
+    plt.semilogy(snr_range, ser_apsk_4_12, 'mv-.', linewidth=2, label='64-APSK (4-12-20-28)')
+    plt.semilogy(snr_range, ser_qam, 'rs:', linewidth=2, label='64-QAM (Standard)')
+    plt.title('SER vs SNR Comparison')
+    plt.xlabel('SNR (dB)')
+    plt.ylabel('Symbol Error Rate (SER)')
+    plt.grid(True, which="both", ls="--")
+    plt.ylim(1e-5, 1)
+    plt.legend()
+    plt.savefig('64apsk_vs_64qam_ser.png')
+    print("SER plot saved to 64apsk_vs_64qam_ser.png")
 
 if __name__ == "__main__":
     main()
