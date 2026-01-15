@@ -1,3 +1,9 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.spatial import distance
+from scipy.spatial.distance import pdist
+from scipy.optimize import minimize
+
 # ==========================================
 # 1. Constellation Generation Functions
 # ==========================================
@@ -381,5 +387,367 @@ def run_experiment():
     print("\n=== Experiment Completed Successfully ===")
 
 
+
+# ==========================================
+# 5. Optimization Functions
+# ==========================================
+
+def generate_apsk_phased(ring_counts, alpha, phases):
+    """
+    Generates a 64-APSK constellation with specified ring counts, radius alpha, and phase offsets.
+    
+    Parameters:
+        ring_counts (list): List of number of points per ring.
+        alpha (float): Radius spacing factor.
+        phases (list): Phase offsets for each ring in radians.
+        
+    Returns:
+        points (np.array): Normalized complex array of constellation points.
+    """
+    """
+    【責務】
+    - リング構成、半径比(alpha)、および各リングの回転角(phases)を指定して64-APSK信号点配置を生成する。
+    - `generate_apsk_custom` の拡張版であり、リングごとの位相回転（オフセット）を個別に制御可能。
+    - 生成後の平均電力は1に正規化される。
+
+    【手順書との対応】
+    - 「各リングをどれだけ回転させるか」というパラメータ追加に対応。
+    - 内側のリングに対して外側のリングをずらして配置する操作を実現する。
+    """
+    ring_counts = np.array(ring_counts)
+    num_rings = len(ring_counts)
+    
+    # 1. Radii calculation (Same as before)
+    gamma = np.array([1.0 + i * alpha for i in range(num_rings)])
+    total_points = np.sum(ring_counts)
+    energy_unscaled = np.sum(ring_counts * (gamma ** 2))
+    R1 = np.sqrt(total_points / energy_unscaled)
+    radii = gamma * R1
+    
+    points = []
+    
+    # 2. Point generation with phase offsets
+    for r_idx in range(num_rings):
+        n_points = ring_counts[r_idx]
+        radius = radii[r_idx]
+        # Use provided phase offset for this ring
+        phase_offset = phases[r_idx] if r_idx < len(phases) else 0.0
+        
+        for i in range(n_points):
+            theta = 2 * np.pi * i / n_points + phase_offset
+            points.append(radius * np.exp(1j * theta))
+            
+    return np.array(points)
+
+def calculate_dmin(points):
+    """
+    Calculates the minimum Euclidean distance between any pair of points in the constellation.
+    """
+    """
+    【責務】
+    - コンスタレーション点群内の全点ペア間のユークリッド距離を計算し、その最小値(d_min)を返す。
+    - この値が大きいほど、雑音に対する耐性が強い（誤り率が低い）と期待される理論的指標。
+
+    【手順書との対応】
+    - 「理論的指標：最小ユークリッド距離の算出」に対応。
+    - シミュレーションを行わずに配置の良し悪しを評価するコア関数。
+    """
+    # Convert complex points to (N, 2) real coordinates
+    coords = np.column_stack((points.real, points.imag))
+    
+    # Calculate all pairwise distances
+    dists = pdist(coords, 'euclidean')
+    
+    # Return the minimum distance
+    # pdist returns a condensed distance matrix (1D array), so min() works directly
+    if len(dists) == 0:
+        return 0.0
+    return np.min(dists)
+
+def optimize_constellation(ring_counts):
+    """
+    Finds the optimal alpha and phase offsets to maximize d_min.
+    Assumes the first ring phase is fixed at 0.
+    """
+    """
+    【責務】
+    - 指定されたリング構成に対して、d_min を最大化する最適な alpha と phases を自動探索する。
+    - `scipy.optimize.minimize` を使用し、d_min の符号反転値を最小化（＝d_minを最大化）する。
+    - 第1リングの位相は基準として0に固定し、探索空間を削減している。
+
+    【手順書との対応】
+    - 「自動探索：scipy.optimize などを使って…自動で探させる」に対応。
+    - 手動スイープでは不可能な多次元パラメータ空間（alpha + 3つの回転角）の最適化を実現。
+    """
+    num_rings = len(ring_counts)
+    
+    # Objective function to MINIMIZE (so we return negative d_min)
+    def objective(params):
+        alpha = params[0]
+        # First ring phase fixed at 0
+        current_phases = [0.0] + list(params[1:])
+        
+        points = generate_apsk_phased(ring_counts, alpha, current_phases)
+        d_min = calculate_dmin(points)
+        return -d_min  # Maximize d_min
+    
+    # Initial guesses
+    # Alpha around 0.6, Phases all 0 initially
+    x0 = [0.6] + [0.0] * (num_rings - 1)
+    
+    # Bounds
+    # Alpha: 0.1 to 1.5
+    # Phases: Should be within 0 to pi/N (symmetry)
+    # But let's give a bit more range, e.g., -pi/N to pi/N or 0 to 2pi/N
+    bounds = [(0.1, 1.5)]
+    for count in ring_counts[1:]:
+        # Range for phase shift: cover at least one sector
+        limit = 2 * np.pi / count
+        bounds.append((0, limit))
+        
+    print(f"Starting optimization for config {ring_counts}...")
+    result = minimize(objective, x0, bounds=bounds, method='L-BFGS-B')
+    
+    best_params = result.x
+    best_alpha = best_params[0]
+    best_phases = [0.0] + list(best_params[1:])
+    max_dmin = -result.fun
+    
+    return best_alpha, best_phases, max_dmin
+
+def run_optimization_task():
+    print("=== Starting 64-APSK Geometry Optimization (Max d_min) ===")
+    
+    """
+    【責務】
+    - 幾何学的指標(最小ユークリッド距離 d_min)に基づく最適化実験を実行するメイン関数。
+    - scipy.optimize を用いて、SER計算なしで高速に最適配置(半径比 + 回転角)を探索する。
+    - 得られた最適配置が、実際にSER特性においても優れているかをAWGNシミュレーションで検証する。
+
+    【手順書との対応】
+    - 新提案方針「幾何学的最適化」の実装。
+    - ステップ1: 最小距離 d_min の最大化。
+    - ステップ2: 導出されたコンスタレーションのSER検証とQAM比較。
+    """
+    
+    # Config A
+    CONFIG_A = [4, 12, 20, 28]
+    
+    # 1. Optimize
+    best_alpha, best_phases, max_dmin = optimize_constellation(CONFIG_A)
+    
+    print("\noptimization Results for Config A:")
+    print(f"Optimal Alpha: {best_alpha:.4f}")
+    print(f"Optimal Phases: {[f'{p:.4f}' for p in best_phases]}")
+    print(f"Maximized d_min: {max_dmin:.4f}")
+    
+    # 2. Verify with Standard QAM
+    const_qam = generate_64qam_constellation()
+    dmin_qam = calculate_dmin(const_qam)
+    print(f"Reference: 64-QAM d_min: {dmin_qam:.4f}")
+    
+    # 3. Visualize Optimized Constellation
+    points_opt = generate_apsk_phased(CONFIG_A, best_alpha, best_phases)
+    plot_constellation(points_opt, 
+                      f'Optimized 64-APSK (d_min={max_dmin:.3f})', 
+                      'optimized_constellation.png')
+    
+    # 4. Compare SER with Baseline (Non-rotated, close to optimal alpha)
+    # Using previous best alpha approx 0.65, zero phases
+    points_baseline = generate_apsk_phased(CONFIG_A, 0.65, [0,0,0,0])
+    
+    SNR_DB = 18.0
+    print(f"\nVerifying SER at SNR={SNR_DB}dB (100,000 symbols)...")
+    
+    ser_baseline = simulate_ser(points_baseline, SNR_DB, 100000)
+    ser_opt = simulate_ser(points_opt, SNR_DB, 100000)
+    ser_qam = simulate_ser(const_qam, SNR_DB, 100000)
+    
+    print(f"Baseline (Rotation=0) SER: {ser_baseline:.5e}")
+    print(f"Optimized (Rotated)   SER: {ser_opt:.5e}")
+    print(f"64-QAM                SER: {ser_qam:.5e}")
+    
+    # Plot Comparison
+    labels = ['Baseline', 'Optimized', '64-QAM']
+    values = [ser_baseline, ser_opt, ser_qam]
+    
+    plt.figure(figsize=(8, 6))
+    bars = plt.bar(labels, values, color=['gray', 'blue', 'red'])
+    plt.title(f'Performance Verification (SNR={SNR_DB}dB)')
+    plt.ylabel('Symbol Error Rate (SER)')
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height, f'{height:.2e}', ha='center', va='bottom')
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+    plt.savefig('optimization_verification.png')
+    plt.close()
+    print("Saved comparison plot: optimization_verification.png")
+    """
+    Generates a 64-APSK constellation with specified ring counts, radius alpha, and phase offsets.
+    
+    Parameters:
+        ring_counts (list): List of number of points per ring.
+        alpha (float): Radius spacing factor.
+        phases (list): Phase offsets for each ring in radians.
+        
+    Returns:
+        points (np.array): Normalized complex array of constellation points.
+    """
+    """
+    【責務】
+    - 半径比(alpha)だけでなく、各リングの回転角(phases)を指定して64-APSKを生成する。
+    - 既存のgenerate_apsk_customの拡張版。
+    """
+    ring_counts = np.array(ring_counts)
+    num_rings = len(ring_counts)
+    
+    # 1. Radii calculation (Same as before)
+    gamma = np.array([1.0 + i * alpha for i in range(num_rings)])
+    total_points = np.sum(ring_counts)
+    energy_unscaled = np.sum(ring_counts * (gamma ** 2))
+    R1 = np.sqrt(total_points / energy_unscaled)
+    radii = gamma * R1
+    
+    points = []
+    
+    # 2. Point generation with phase offsets
+    for r_idx in range(num_rings):
+        n_points = ring_counts[r_idx]
+        radius = radii[r_idx]
+        # Use provided phase offset for this ring
+        phase_offset = phases[r_idx] if r_idx < len(phases) else 0.0
+        
+        for i in range(n_points):
+            theta = 2 * np.pi * i / n_points + phase_offset
+            points.append(radius * np.exp(1j * theta))
+            
+    return np.array(points)
+
+def calculate_dmin(points):
+    """
+    Calculates the minimum Euclidean distance between any pair of points in the constellation.
+    """
+    """
+    【責務】
+    - コンスタレーション点群を受け取り、点同士の最小距離(d_min)を計算して返す。
+    - scipy.spatial.distance.pdist を使用して効率的に計算する。
+    """
+    # Convert complex points to (N, 2) real coordinates
+    coords = np.column_stack((points.real, points.imag))
+    
+    # Calculate all pairwise distances
+    dists = pdist(coords, 'euclidean')
+    
+    # Return the minimum distance
+    # pdist returns a condensed distance matrix (1D array), so min() works directly
+    if len(dists) == 0:
+        return 0.0
+    return np.min(dists)
+
+def optimize_constellation(ring_counts):
+    """
+    Finds the optimal alpha and phase offsets to maximize d_min.
+    Assumes the first ring phase is fixed at 0.
+    """
+    """
+    【責務】
+    - scipy.optimize.minimize を使用して、d_minを最大化するパラメータを探索する。
+    - パラメータ:
+        - alpha (1つ)
+        - phases (リング数 - 1個, 第1リングは0固定)
+    """
+    num_rings = len(ring_counts)
+    
+    # Objective function to MINIMIZE (so we return negative d_min)
+    def objective(params):
+        alpha = params[0]
+        # First ring phase fixed at 0
+        current_phases = [0.0] + list(params[1:])
+        
+        points = generate_apsk_phased(ring_counts, alpha, current_phases)
+        d_min = calculate_dmin(points)
+        return -d_min  # Maximize d_min
+    
+    # Initial guesses
+    # Alpha around 0.6, Phases all 0 initially
+    x0 = [0.6] + [0.0] * (num_rings - 1)
+    
+    # Bounds
+    # Alpha: 0.1 to 1.5
+    # Phases: Should be within 0 to pi/N (symmetry)
+    # But let's give a bit more range, e.g., -pi/N to pi/N or 0 to 2pi/N
+    bounds = [(0.1, 1.5)]
+    for count in ring_counts[1:]:
+        # Range for phase shift: cover at least one sector
+        limit = 2 * np.pi / count
+        bounds.append((0, limit))
+        
+    print(f"Starting optimization for config {ring_counts}...")
+    result = minimize(objective, x0, bounds=bounds, method='L-BFGS-B')
+    
+    best_params = result.x
+    best_alpha = best_params[0]
+    best_phases = [0.0] + list(best_params[1:])
+    max_dmin = -result.fun
+    
+    return best_alpha, best_phases, max_dmin
+
+def run_optimization_task():
+    print("=== Starting 64-APSK Geometry Optimization (Max d_min) ===")
+    
+    # Config A
+    CONFIG_A = [4, 12, 20, 28]
+    
+    # 1. Optimize
+    best_alpha, best_phases, max_dmin = optimize_constellation(CONFIG_A)
+    
+    print("\noptimization Results for Config A:")
+    print(f"Optimal Alpha: {best_alpha:.4f}")
+    print(f"Optimal Phases: {[f'{p:.4f}' for p in best_phases]}")
+    print(f"Maximized d_min: {max_dmin:.4f}")
+    
+    # 2. Verify with Standard QAM
+    const_qam = generate_64qam_constellation()
+    dmin_qam = calculate_dmin(const_qam)
+    print(f"Reference: 64-QAM d_min: {dmin_qam:.4f}")
+    
+    # 3. Visualize Optimized Constellation
+    points_opt = generate_apsk_phased(CONFIG_A, best_alpha, best_phases)
+    plot_constellation(points_opt, 
+                      f'Optimized 64-APSK (d_min={max_dmin:.3f})', 
+                      'optimized_constellation.png')
+    
+    # 4. Compare SER with Baseline (Non-rotated, close to optimal alpha)
+    # Using previous best alpha approx 0.65, zero phases
+    points_baseline = generate_apsk_phased(CONFIG_A, 0.65, [0,0,0,0])
+    
+    SNR_DB = 18.0
+    print(f"\nVerifying SER at SNR={SNR_DB}dB (100,000 symbols)...")
+    
+    ser_baseline = simulate_ser(points_baseline, SNR_DB, 100000)
+    ser_opt = simulate_ser(points_opt, SNR_DB, 100000)
+    ser_qam = simulate_ser(const_qam, SNR_DB, 100000)
+    
+    print(f"Baseline (Rotation=0) SER: {ser_baseline:.5e}")
+    print(f"Optimized (Rotated)   SER: {ser_opt:.5e}")
+    print(f"64-QAM                SER: {ser_qam:.5e}")
+    
+    # Plot Comparison
+    labels = ['Baseline', 'Optimized', '64-QAM']
+    values = [ser_baseline, ser_opt, ser_qam]
+    
+    plt.figure(figsize=(8, 6))
+    bars = plt.bar(labels, values, color=['gray', 'blue', 'red'])
+    plt.title(f'Performance Verification (SNR={SNR_DB}dB)')
+    plt.ylabel('Symbol Error Rate (SER)')
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height, f'{height:.2e}', ha='center', va='bottom')
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+    plt.savefig('optimization_verification.png')
+    plt.close()
+    print("Saved comparison plot: optimization_verification.png")
+
 if __name__ == "__main__":
-    run_experiment()
+    # run_experiment()
+    run_optimization_task()
