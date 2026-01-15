@@ -1,7 +1,3 @@
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.spatial import distance
-
 # ==========================================
 # 1. Constellation Generation Functions
 # ==========================================
@@ -16,6 +12,19 @@ def generate_apsk_custom(ring_counts, alpha):
         
     Returns:
         points (np.array): Normalized complex array of constellation points (Average Power = 1).
+    """
+    """
+    【責務】
+    - 64-APSKのコンスタレーション点群を生成する関数。
+    - リングごとの点数（ring_counts）と、半径比を決める1パラメータ alpha を入力として、
+      各リングの半径を決めた上で、等角配置で点を生成する。
+    - 最後に平均電力（平均シンボルエネルギー）が1になるように正規化する。
+
+    【手順書との対応】
+    - 「半径比は alpha による1パラメータ化でスイープ」に対応。
+      具体的には gamma = [1, 1+α, 1+2α, 1+3α] の形で半径比を作っている。
+    - 「平均電力1に正規化（公平比較）」に対応。
+    - 「リング内は等角配置」「位相オフセットは0固定」に対応。
     """
     ring_counts = np.array(ring_counts)
     num_rings = len(ring_counts)
@@ -48,10 +57,20 @@ def generate_apsk_custom(ring_counts, alpha):
             
     return np.array(points)
 
+
 def generate_64qam_constellation():
     """
     Generates a standard square 64-QAM constellation.
     Normalized to average power = 1.
+    """
+    """
+    【責務】
+    - 64-QAM（正方格子）の標準的なコンスタレーション点群を生成する関数。
+    - 8x8 = 64点の格子（I/Qレベル）を作り、平均電力1に正規化する。
+
+    【手順書との対応】
+    - 「64QAMとの比較（1つだけ）」のための比較対象コンスタレーション生成に対応。
+    - 「平均電力1に正規化（公平比較）」に対応。
     """
     # M-QAM levels: -7, -5, -3, -1, 1, 3, 5, 7
     levels = np.array([-7, -5, -3, -1, 1, 3, 5, 7])
@@ -70,6 +89,7 @@ def generate_64qam_constellation():
     
     return points / scale_factor
 
+
 # ==========================================
 # 2. Simulation Functions (SER)
 # ==========================================
@@ -78,6 +98,17 @@ def simulate_ser(constellation, snr_db, num_symbols=100000):
     """
     Simulates Symbol Error Rate (SER) for a given constellation at a specific SNR.
     Uses Nearest Neighbor (ML) decoding.
+    """
+    """
+    【責務】
+    - 指定したコンスタレーションについて、AWGN環境でのSERをモンテカルロ法で推定する。
+    - 送信 → 雑音付加 → 復調（最近傍判定） → SER計算 を行う。
+
+    【手順書との対応】
+    - チャネル：AWGN に対応。
+    - 復調：最近傍判定（最小ユークリッド距離、ML復調）に対応。
+    - SNR固定1点（例 18 dB）は run_experiment() 側で固定して呼び出される前提。
+    - 評価指標：SER（BERではない）に対応。
     """
     M = len(constellation)
     
@@ -115,6 +146,7 @@ def simulate_ser(constellation, snr_db, num_symbols=100000):
     
     return ser
 
+
 # ==========================================
 # 3. Visualization Functions
 # ==========================================
@@ -122,6 +154,16 @@ def simulate_ser(constellation, snr_db, num_symbols=100000):
 def plot_constellation(points, title, filename):
     plt.figure(figsize=(8, 8))
     plt.scatter(points.real, points.imag, c='blue', marker='o', label='Constellation Points')
+    
+    """
+    【責務】
+    - コンスタレーション点群（複素平面上の点）を散布図として保存する。
+    - 視覚的にリング構造が分かるように、半径ごとの円（リング）も補助的に描画する。
+
+    【手順書との対応】
+    - 成果物①「現行64APSKのコンスタレーション図（正規化込み）」に対応。
+    - 議論用の図として「どんな配置になっているか」を示す役割。
+    """
     
     # Draw rings for visual aid (optional)
     radii = np.unique(np.abs(points))
@@ -141,8 +183,20 @@ def plot_constellation(points, title, filename):
     plt.close()
     print(f"Saved plot: {filename}")
 
+
 def plot_sweep_results(alpha_values, ser_results_A, ser_results_B, best_A, best_B, filename):
     plt.figure(figsize=(10, 6))
+
+    """
+    【責務】
+    - α（半径比パラメータ）を横軸、SERを縦軸（対数）にして折れ線グラフを生成する。
+    - Config A / Config B を同じ図に重ねて比較できるようにする。
+    - さらに最良点（best_A, best_B）をマーカーで強調表示する。
+
+    【手順書との対応】
+    - 成果物②「半径比スイープのSERグラフ（SNR固定）」に対応。
+    - 「リング構成が違うと最適αが変わる」を示す主要な図になる。
+    """
     
     # Plot Config A
     plt.semilogy(alpha_values, ser_results_A, 'b-o', label='Config A (4-12-20-28)')
@@ -162,11 +216,24 @@ def plot_sweep_results(alpha_values, ser_results_A, ser_results_B, best_A, best_
     plt.close()
     print(f"Saved plot: {filename}")
 
+
 def plot_comparison_bar(ser_apsk, ser_qam, label_apsk, filename):
     labels = [label_apsk, '64-QAM']
     values = [ser_apsk, ser_qam]
     
     plt.figure(figsize=(7, 6))
+
+    """
+    【責務】
+    - 最良64-APSK（または指定したAPSK）と64-QAMのSERを棒グラフで比較する。
+    - “同じSNRならどちらがSERが小さいか” を直感的に見せる目的。
+
+    【手順書との対応】
+    - 成果物③「64QAM vs 64APSK のSER比較」に対応。
+    - 注意：AWGNだけの比較なので、衛星通信の“非線形耐性”の議論には直結しにくいが、
+      「AWGN環境ではQAMが有利になりがち」の確認として使える。
+    """
+
     bars = plt.bar(labels, values, color=['blue', 'red'])
     
     # Add value labels
@@ -183,13 +250,35 @@ def plot_comparison_bar(ser_apsk, ser_qam, label_apsk, filename):
     plt.close()
     print(f"Saved plot: {filename}")
 
+
 # ==========================================
 # 4. Main Experiment Logic
 # ==========================================
 
 def run_experiment():
     print("=== Starting 64-APSK Optimization Experiment ===")
-    
+
+    """
+    【責務（この研究の実験プロトコル本体）】
+    - 実験条件（SNR固定、AWGN、最近傍判定、平均電力正規化）を固定した上で
+      64APSKの半径比パラメータ α をスイープし、SER最小となるαを探索する。
+    - さらにリング構成の違い（AとB）がSERに与える影響も同時に比較する。
+    - 最後に64QAMと比較し、成果物の図を保存する。
+
+    【手順書との対応（そのまま対応）】
+    Step 1: 粗いスイープ（例 0.2〜0.8 を0.1刻み、2e4シンボル）
+    Step 2: 良さそうな範囲だけ細かくスイープ（例 0.02刻み、1e5シンボル）
+    Step 3: 64QAMとの比較（同一SNRでSER比較）
+    Step 4: 成果物作成（図3枚）
+
+    【注意点（手順書と完全一致ではない部分）】
+    - Fine Sweep の範囲が A/Bそれぞれの粗探索ベストを中心にするのではなく、
+      2つのベストの平均(center_alpha)を中心に同一範囲を探索している。
+      もしAとBの最適αが離れていると、片方の最適を取り逃す可能性がある。
+    - コンスタレーション図はAのみ描画している（Bも描くとより説明しやすい）。
+    - QAM比較もAのみ（Bも比較できるとより完全）。
+    """
+
     # Parameters
     SNR_DB = 18.0
     NUM_SYMBOLS_COARSE = 20000
@@ -291,6 +380,6 @@ def run_experiment():
     
     print("\n=== Experiment Completed Successfully ===")
 
+
 if __name__ == "__main__":
     run_experiment()
-
