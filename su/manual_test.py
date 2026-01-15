@@ -189,6 +189,57 @@ def simulate_ser(constellation, snr_db, num_symbols=100000):
     errors = np.sum(tx_indices != estimated_indices)
     return errors / num_symbols
 
+def simulate_ber(constellation, snr_db, num_symbols=100000):
+    """
+    Simulates Bit Error Rate (BER) for a given constellation.
+    Maps symbol indices to 6-bit binary sequences.
+    """
+    M = len(constellation)
+    bits_per_symbol = int(np.log2(M))
+    
+    # 1. Generate random bits
+    tx_bits = np.random.randint(0, 2, num_symbols * bits_per_symbol)
+    
+    # 2. Group bits into symbols (Index mapping)
+    # Shape: (num_symbols, bits_per_symbol)
+    tx_bit_matrix = tx_bits.reshape(num_symbols, bits_per_symbol)
+    # Convert bits to indices (0 to 63)
+    tx_indices = np.dot(tx_bit_matrix, 1 << np.arange(bits_per_symbol)[::-1])
+    tx_symbols = constellation[tx_indices]
+    
+    # 3. Add AWGN
+    snr_linear = 10**(snr_db / 10.0)
+    n0 = 1.0 / snr_linear
+    noise_std = np.sqrt(n0 / 2)
+    noise = noise_std * (np.random.randn(num_symbols) + 1j * np.random.randn(num_symbols))
+    rx_symbols = tx_symbols + noise
+    
+    # 4. Demodulate (Nearest Neighbor)
+    rx_coords = np.column_stack((rx_symbols.real, rx_symbols.imag))
+    const_coords = np.column_stack((constellation.real, constellation.imag))
+    
+    from scipy.spatial import distance
+    dists = distance.cdist(rx_coords, const_coords, 'euclidean')
+    est_indices = np.argmin(dists, axis=1)
+    
+    # 5. Convert indices back to bits
+    # Use bitwise operations to extract bits from indices
+    est_bit_matrix = np.zeros((num_symbols, bits_per_symbol), dtype=int)
+    for i in range(bits_per_symbol):
+        est_bit_matrix[:, bits_per_symbol - 1 - i] = (est_indices >> i) & 1
+    
+    est_bits = est_bit_matrix.flatten()
+    
+    bit_errors = np.sum(tx_bits != est_bits)
+    return bit_errors / (num_symbols * bits_per_symbol)
+
+def generate_64qam():
+    """Generates normalized 64-QAM."""
+    levels = np.array([-7, -5, -3, -1, 1, 3, 5, 7])
+    qam = np.array([i + 1j*q for i in levels for q in levels])
+    avg_energy = np.mean(np.abs(qam)**2)
+    return qam / np.sqrt(avg_energy)
+
 # ==========================================
 # 3. Brute-Force Sweep Engines
 # ==========================================
@@ -372,5 +423,78 @@ def run_catalog_creation():
             
     print("Catalog saved to 'optimized_catalog.txt' as a Markdown table.")
 
+def run_final_performance_comparison():
+    print("\n=== Running Final SER/BER Performance Comparison (SNR Sweep) ===")
+    
+    # 1. Target Configurations & Parameters
+    # Values found from catalog (alpha/phases)
+    configs = {
+        "[8,14,20,22]": {
+            "rings": [8, 14, 20, 22],
+            "alpha": 0.70, # Approximate best
+            "phases": [0.0, 0.0, 0.0, 0.0]
+        },
+        "[8,16,20,20]": {
+            "rings": [8, 16, 20, 20],
+            "alpha": 0.65, 
+            "phases": [0.0, 0.0, 0.0, 0.0] 
+        },
+        "64-QAM": {
+            "constellation": generate_64qam(),
+            "type": "qam"
+        }
+    }
+    
+    snr_range = np.arange(12, 22.1, 2.0)
+    ser_results = {name: [] for name in configs}
+    ber_results = {name: [] for name in configs}
+    
+    for snr in snr_range:
+        print(f"   Simulating SNR = {snr:.1f} dB...")
+        for name, cfg in configs.items():
+            if "constellation" in cfg:
+                const = cfg["constellation"]
+            else:
+                const = generate_apsk_phased(cfg["rings"], cfg["alpha"], cfg["phases"])
+            
+            ser = simulate_ser(const, snr, num_symbols=50000)
+            ber = simulate_ber(const, snr, num_symbols=50000)
+            
+            ser_results[name].append(ser)
+            ber_results[name].append(ber)
+
+    # 2. Plotting Results
+    output_dir = "data/manual_su"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # SER Plot
+    plt.figure(figsize=(10, 6))
+    for name in configs:
+        plt.semilogy(snr_range, ser_results[name], marker='o', label=name)
+    plt.grid(True, which='both', linestyle='--')
+    plt.xlabel('SNR (dB)')
+    plt.ylabel('Symbol Error Rate (SER)')
+    plt.title('SER Performance Comparison')
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, 'final_ser_comparison.jpg'), format='jpg', pil_kwargs={'quality': 95})
+    plt.close()
+
+    # BER Plot
+    plt.figure(figsize=(10, 6))
+    for name in configs:
+        plt.semilogy(snr_range, ber_results[name], marker='s', label=name)
+    plt.grid(True, which='both', linestyle='--')
+    plt.xlabel('SNR (dB)')
+    plt.ylabel('Bit Error Rate (BER)')
+    plt.title('BER Performance Comparison')
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, 'final_ber_comparison.jpg'), format='jpg', pil_kwargs={'quality': 95})
+    plt.close()
+    
+    print(f"Comparison plots saved to {output_dir} as JPEG.")
+
 if __name__ == "__main__":
+    # 1. Run Catalog Creation (Original Task)
     run_catalog_creation()
+    # 2. Run Final Performance Sweep (New Task)
+    run_final_performance_comparison()
